@@ -1,19 +1,15 @@
-using System;
-using System.Threading.Tasks;
 using Azure.Messaging.ServiceBus;
+using EmailFunction.Models;
+using EmailFunction.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
 namespace EmailFunction;
 
-public class AccountEmailVerificationService
+public class AccountEmailVerificationService(ILogger<AccountEmailVerificationService> logger, IEmailVerificationService emailVerificationService)
 {
-    private readonly ILogger<AccountEmailVerificationService> _logger;
-
-    public AccountEmailVerificationService(ILogger<AccountEmailVerificationService> logger)
-    {
-        _logger = logger;
-    }
+    private readonly ILogger<AccountEmailVerificationService> _logger = logger;
+    private readonly IEmailVerificationService _emailVerificationService = emailVerificationService;
 
     [Function("SendVerificationEmail")]
     public async Task Run(
@@ -26,9 +22,23 @@ public class AccountEmailVerificationService
         _logger.LogInformation("Message Content-Type: {contentType}", message.ContentType);
 
         
+        var model = message.Body.ToObjectFromJson<SendVerificationEmailModel>();
 
+        if(model == null || string.IsNullOrWhiteSpace(model.Email) || !model.Email.Contains('@'))
+        {
+            _logger.LogError($"Invalid or missing email address in message: {message.Body}");
+            return;
+        }
 
-
-        await messageActions.CompleteMessageAsync(message);
+        try
+        {
+            await _emailVerificationService.SendVerificationEmailAsync(model);
+            await messageActions.CompleteMessageAsync(message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error sending email for message with ID: {message.MessageId}");
+            await messageActions.DeadLetterMessageAsync(message);
+        }
     }
 }
