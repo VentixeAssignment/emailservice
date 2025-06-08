@@ -27,10 +27,10 @@ public class EmailVerificationService(IConfiguration config, EmailClient client,
             var code = _random.Next(100000, 999999).ToString();
             var subject = "Email Verification Code";
             var plainTextContent = $@"
-            
+                {code}
             ";
             var htmlContent = $@"
-
+                {code}
             ";
 
             var emailMessage = new EmailMessage(
