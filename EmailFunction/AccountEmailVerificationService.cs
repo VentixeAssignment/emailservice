@@ -1,17 +1,22 @@
+using Azure;
+using Azure.Communication.Email;
 using Azure.Messaging.ServiceBus;
 using EmailFunction.Models;
-using EmailFunction.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Net;
+using System.Text.Json;
 
 namespace EmailFunction;
 
-public class AccountEmailVerificationService(ILogger<AccountEmailVerificationService> logger, IEmailVerificationService emailVerificationService)
+public class AccountEmailVerificationService(ILogger<AccountEmailVerificationService> logger, IConfiguration config, EmailClient emailClient)
 {
     private readonly ILogger<AccountEmailVerificationService> _logger = logger;
-    private readonly IEmailVerificationService _emailVerificationService = emailVerificationService;
+    private readonly IConfiguration _config = config;
+    private readonly EmailClient _emailClient = emailClient;
+
 
     [Function("SendVerificationEmail")]
     public async Task Send(
@@ -22,63 +27,49 @@ public class AccountEmailVerificationService(ILogger<AccountEmailVerificationSer
         _logger.LogInformation("Message ID: {id}", message.MessageId);
         _logger.LogInformation("Message Body: {body}", message.Body);
         _logger.LogInformation("Message Content-Type: {contentType}", message.ContentType);
+        _logger.LogInformation($"Email contentt {message.Body.ToString()}");
 
-        
-        var model = message.Body.ToObjectFromJson<SendVerificationEmailModel>();
+        var payload = message.Body.ToObjectFromJson<VerifyVerificationCodeModel>();
 
-        if(model == null || string.IsNullOrWhiteSpace(model.Email) || !model.Email.Contains('@'))
+        if (payload == null || string.IsNullOrWhiteSpace(payload.Email) || !payload.Email.Contains('@') || string.IsNullOrWhiteSpace(payload.Code))
         {
-            _logger.LogError($"Invalid or missing email address in message: {message.Body}");
+            _logger.LogError($"Invalid or missing email address or code in message.");
             return;
         }
 
+        var subject = "Email Verification Code";
+        var plainTextContent = $@"
+                {payload.Code}
+            ";
+        var htmlContent = $@"
+                {payload.Code}
+            ";
+
+        var emailMessage = new EmailMessage(
+            senderAddress: _config["SenderAddress"],
+            recipients: new EmailRecipients([new(payload.Email)]),
+            content: new EmailContent(subject)
+            {
+                PlainText = plainTextContent,
+                Html = htmlContent
+            }
+        );
+        _logger.LogInformation($"Sending email from: {emailMessage.SenderAddress}");
+        _logger.LogInformation($"To: {string.Join(",", emailMessage.Recipients.To.Select(r => r.Address))}");
+        _logger.LogInformation($"Subject: {emailMessage.Content.Subject}");
+        _logger.LogInformation($"Plain text body: {emailMessage.Content.PlainText}");
+        _logger.LogInformation($"HTML body: {emailMessage.Content.Html}");
         try
         {
-            await _emailVerificationService.SendVerificationEmailAsync(model);
+            await _emailClient.SendAsync(WaitUntil.Completed, emailMessage);
             await messageActions.CompleteMessageAsync(message);
+            _logger.LogInformation($"Email was sent successfully to email {payload.Email}");
+
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, $"Error sending email for message with ID: {message.MessageId}");
             await messageActions.DeadLetterMessageAsync(message);
         }
-    }
-
-    [Function("VerifyVerificationCode")]
-    public async Task<HttpResponseData> Verify(
-        [HttpTrigger(AuthorizationLevel.Function, "post")] 
-        HttpRequestData request)
-    {
-        _logger.LogInformation("Message Body: {body}", request.Body);
-
-
-        var model = await request.ReadFromJsonAsync<VerifyVerificationCodeModel>();
-
-        if (model == null || string.IsNullOrWhiteSpace(model.Email) || !model.Email.Contains('@'))
-        {
-            _logger.LogError($"Invalid or missing email address in request: {request.Body}");
-            
-            var response = request.CreateResponse(HttpStatusCode.BadRequest);
-            await response.WriteStringAsync("Invalid or missing email address.");
-            return response;
-        }
-
-        try
-        {
-            var result = _emailVerificationService.VerifyVerificationCode(model);
-            
-            var response = request.CreateResponse(result.Succeeded ? HttpStatusCode.OK : HttpStatusCode.BadRequest);
-
-            await response.WriteStringAsync(result.Succeeded ? "Verification successful." : result.ErrorMessage ?? "Verification failed.");
-
-            return response;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, $"Error verifying verification code for account: {request.Body}");
-            var response = request.CreateResponse(HttpStatusCode.BadRequest);
-            await response.WriteStringAsync($"Failed to verify verification code. {request.Body}");
-            return response;
-        }
-    }
+    }    
 }

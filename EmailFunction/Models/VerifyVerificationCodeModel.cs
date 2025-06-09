@@ -8,5 +8,5 @@ public class VerifyVerificationCodeModel
     public string Email { get; set; } = null!;
 
     [Required]
-    public string VerificationCode { get; set; } = null!;
+    public string Code { get; set; } = null!;
 }
